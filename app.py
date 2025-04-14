@@ -14,9 +14,6 @@ from google.protobuf.message import DecodeError
 
 app = Flask(__name__)
 
-# Define valid API keys here
-VALID_API_KEYS = {"yamraj"}
-
 def load_tokens(server_name):
     try:
         if server_name == "IND":
@@ -168,12 +165,8 @@ def decode_protobuf(binary):
 def handle_requests():
     uid = request.args.get("uid")
     server_name = request.args.get("server_name", "").upper()
-    api_key = request.args.get("key")
-
-    if not uid or not server_name or not api_key:
-        return jsonify({"error": "UID, server_name, and key are required"}), 400
-    if api_key not in VALID_API_KEYS:
-        return jsonify({"error": "Invalid API key"}), 403
+    if not uid or not server_name:
+        return jsonify({"error": "UID and server_name are required"}), 400
 
     try:
         def process_request():
@@ -185,15 +178,23 @@ def handle_requests():
             if encrypted_uid is None:
                 raise Exception("Encryption of UID failed.")
 
-            # Get player info before
+            # الحصول على بيانات اللاعب قبل تنفيذ عملية الإعجاب
             before = make_request(encrypted_uid, server_name, token)
             if before is None:
                 raise Exception("Failed to retrieve initial player info.")
-            jsone = MessageToJson(before)
+            try:
+                jsone = MessageToJson(before)
+            except Exception as e:
+                raise Exception(f"Error converting 'before' protobuf to JSON: {e}")
             data_before = json.loads(jsone)
-            before_like = int(data_before.get('AccountInfo', {}).get('Likes', 0))
+            before_like = data_before.get('AccountInfo', {}).get('Likes', 0)
+            try:
+                before_like = int(before_like)
+            except Exception:
+                before_like = 0
+            app.logger.info(f"Likes before command: {before_like}")
 
-            # Determine like URL
+            # تحديد رابط الإعجاب حسب اسم السيرفر
             if server_name == "IND":
                 url = "https://client.ind.freefiremobile.com/LikeProfile"
             elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -201,23 +202,24 @@ def handle_requests():
             else:
                 url = "https://clientbp.ggblueshark.com/LikeProfile"
 
-            # Send 100 like requests
+            # إرسال الطلبات بشكل غير متزامن
             asyncio.run(send_multiple_requests(uid, server_name, url))
 
-            # Get player info after
+            # الحصول على بيانات اللاعب بعد تنفيذ عملية الإعجاب
             after = make_request(encrypted_uid, server_name, token)
             if after is None:
                 raise Exception("Failed to retrieve player info after like requests.")
-            jsone_after = MessageToJson(after)
+            try:
+                jsone_after = MessageToJson(after)
+            except Exception as e:
+                raise Exception(f"Error converting 'after' protobuf to JSON: {e}")
             data_after = json.loads(jsone_after)
-
             after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
             player_uid = int(data_after.get('AccountInfo', {}).get('UID', 0))
             player_name = str(data_after.get('AccountInfo', {}).get('PlayerNickname', ''))
             like_given = after_like - before_like
             status = 1 if like_given != 0 else 2
-
-            return {
+            result = {
                 "LikesGivenByAPI": like_given,
                 "LikesafterCommand": after_like,
                 "LikesbeforeCommand": before_like,
@@ -225,10 +227,10 @@ def handle_requests():
                 "UID": player_uid,
                 "status": status
             }
+            return result
 
         result = process_request()
         return jsonify(result)
-
     except Exception as e:
         app.logger.error(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
